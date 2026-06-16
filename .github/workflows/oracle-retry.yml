@@ -5,9 +5,14 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: oracle-a1-launch
+  cancel-in-progress: false
+
 jobs:
   launch:
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     env:
       OCI_CLI_USER: ocid1.user.oc1..aaaaaaaa5l47xr6mvisomkhqiucy3yspsed5cc2f7kz567lpklzolk3zhx5a
       OCI_CLI_TENANCY: ocid1.tenancy.oc1..aaaaaaaa24qlnlzexeivdt4fwhonp6b4wigcgt3jgjyahkjzp3p6s6b44qwq
@@ -19,7 +24,7 @@ jobs:
         run: |
           curl -sL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash -s -- --accept-all-defaults
           echo "$HOME/bin" >> "$GITHUB_PATH"
-      - name: Launch A1 instance (idempotent)
+      - name: Hunt for A1 capacity (loops ~5.5h, retries every 90s)
         env:
           INSTANCE_SSH_PUBKEY: ${{ secrets.INSTANCE_SSH_PUBKEY }}
         run: |
@@ -29,21 +34,21 @@ jobs:
           SUBNET=$(oci network subnet list -c "$C" --display-name subnet-public-blazor --query 'data[0].id' --raw-output)
           IMG=$(oci compute image list -c "$C" --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' --shape VM.Standard.A1.Flex --query 'data[0].id' --raw-output)
           echo "AD=$AD"; echo "SUBNET=$SUBNET"; echo "IMG=$IMG"
-          CNT=$(oci compute instance list -c "$C" --display-name blazor-server-mandal --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" --raw-output 2>/dev/null || echo 0)
-          if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "Instance already exists (count=$CNT) - nothing to do."; exit 0; fi
           printf '%s\n' "$INSTANCE_SSH_PUBKEY" > /tmp/key.pub
-          OUT=$(oci compute instance launch \
-            --availability-domain "$AD" \
-            --compartment-id "$C" \
-            --shape VM.Standard.A1.Flex \
-            --shape-config '{"ocpus":4,"memoryInGBs":24}' \
-            --image-id "$IMG" \
-            --subnet-id "$SUBNET" \
-            --display-name blazor-server-mandal \
-            --assign-public-ip true \
-            --boot-volume-size-in-gbs 200 \
-            --ssh-authorized-keys-file /tmp/key.pub 2>&1) || true
-          echo "$OUT"
-          if echo "$OUT" | grep -q '"id"'; then echo "SUCCESS: instance launched"; exit 0; fi
-          if echo "$OUT" | grep -qi 'capacity'; then echo "Out of capacity - will retry next run"; exit 0; fi
-          echo "Unexpected error - see log above"; exit 1
+          END=$((SECONDS + 19500))
+          n=0
+          while [ $SECONDS -lt $END ]; do
+            n=$((n+1))
+            CNT=$(oci compute instance list -c "$C" --display-name blazor-server-mandal --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" --raw-output 2>/dev/null || echo 0)
+            if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "Instance already exists (count=$CNT) - done."; exit 0; fi
+            OUT=$(oci compute instance launch \
+              --availability-domain "$AD" --compartment-id "$C" \
+              --shape VM.Standard.A1.Flex --shape-config '{"ocpus":4,"memoryInGBs":24}' \
+              --image-id "$IMG" --subnet-id "$SUBNET" \
+              --display-name blazor-server-mandal --assign-public-ip true \
+              --boot-volume-size-in-gbs 200 --ssh-authorized-keys-file /tmp/key.pub 2>&1) || true
+            if echo "$OUT" | grep -q '"id"'; then echo "SUCCESS: instance launched on attempt #$n"; echo "$OUT" | grep -m1 '"id"'; exit 0; fi
+            if echo "$OUT" | grep -qi 'capacity'; then echo "[$(date -u +%H:%M:%S)] attempt #$n: out of capacity, retrying in 90s"; sleep 90; continue; fi
+            echo "Unexpected error on attempt #$n:"; echo "$OUT"; exit 1
+          done
+          echo "Loop window ended after $n attempts - will be restarted."
