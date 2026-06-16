@@ -24,31 +24,39 @@ jobs:
         run: |
           curl -sL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash -s -- --accept-all-defaults
           echo "$HOME/bin" >> "$GITHUB_PATH"
-      - name: Hunt for A1 capacity (loops ~5.5h, retries every 90s)
+      - name: Hunt for A1 capacity (loops ~5.5h, retries every 60s, never gives up on errors)
         env:
           INSTANCE_SSH_PUBKEY: ${{ secrets.INSTANCE_SSH_PUBKEY }}
         run: |
           set -uo pipefail
           C="$OCI_CLI_TENANCY"
-          AD=$(oci iam availability-domain list --query 'data[0].name' --raw-output)
-          SUBNET=$(oci network subnet list -c "$C" --display-name subnet-public-blazor --query 'data[0].id' --raw-output)
-          IMG=$(oci compute image list -c "$C" --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' --shape VM.Standard.A1.Flex --query 'data[0].id' --raw-output)
+          AD=$(oci iam availability-domain list --query 'data[0].name' --raw-output 2>/dev/null || echo '')
+          SUBNET=$(oci network subnet list -c "$C" --display-name subnet-public-blazor --query 'data[0].id' --raw-output 2>/dev/null || echo '')
+          IMG=$(oci compute image list -c "$C" --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' --shape VM.Standard.A1.Flex --query 'data[0].id' --raw-output 2>/dev/null || echo '')
           echo "AD=$AD"; echo "SUBNET=$SUBNET"; echo "IMG=$IMG"
           printf '%s\n' "$INSTANCE_SSH_PUBKEY" > /tmp/key.pub
           END=$((SECONDS + 19500))
           n=0
           while [ $SECONDS -lt $END ]; do
             n=$((n+1))
+            T=$(date -u +%H:%M:%S)
+            if [ -z "$AD" ] || [ -z "$SUBNET" ] || [ -z "$IMG" ]; then
+              AD=$(oci iam availability-domain list --query 'data[0].name' --raw-output 2>/dev/null || echo '')
+              SUBNET=$(oci network subnet list -c "$C" --display-name subnet-public-blazor --query 'data[0].id' --raw-output 2>/dev/null || echo '')
+              IMG=$(oci compute image list -c "$C" --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' --shape VM.Standard.A1.Flex --query 'data[0].id' --raw-output 2>/dev/null || echo '')
+              echo "[$T] attempt #$n: re-resolved AD/SUBNET/IMG"; sleep 60; continue
+            fi
             CNT=$(oci compute instance list -c "$C" --display-name blazor-server-mandal --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" --raw-output 2>/dev/null || echo 0)
-            if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "Instance already exists (count=$CNT) - done."; exit 0; fi
+            if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "[$T] Instance already exists (count=$CNT) - done."; exit 0; fi
             OUT=$(oci compute instance launch \
               --availability-domain "$AD" --compartment-id "$C" \
               --shape VM.Standard.A1.Flex --shape-config '{"ocpus":4,"memoryInGBs":24}' \
               --image-id "$IMG" --subnet-id "$SUBNET" \
               --display-name blazor-server-mandal --assign-public-ip true \
               --boot-volume-size-in-gbs 200 --ssh-authorized-keys-file /tmp/key.pub 2>&1) || true
-            if echo "$OUT" | grep -q '"id"'; then echo "SUCCESS: instance launched on attempt #$n"; echo "$OUT" | grep -m1 '"id"'; exit 0; fi
-            if echo "$OUT" | grep -qi 'capacity'; then echo "[$(date -u +%H:%M:%S)] attempt #$n: out of capacity, retrying in 90s"; sleep 90; continue; fi
-            echo "Unexpected error on attempt #$n:"; echo "$OUT"; exit 1
+            if echo "$OUT" | grep -q '"id"'; then echo "[$T] SUCCESS: instance launched on attempt #$n"; echo "$OUT" | grep -m1 '"id"'; exit 0; fi
+            MSG=$(echo "$OUT" | grep -i '"message"' | head -1 | sed 's/.*"message": *//;s/[",]//g')
+            echo "[$T] attempt #$n: no instance yet (${MSG:-retrying}); waiting 60s"
+            sleep 60
           done
           echo "Loop window ended after $n attempts - will be restarted."
