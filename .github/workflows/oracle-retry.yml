@@ -24,10 +24,11 @@ jobs:
           INSTANCE_SSH_PUBKEY: ${{ secrets.INSTANCE_SSH_PUBKEY }}
         run: |
           set -uo pipefail
-          C="ocid1.tenancy.oc1..aaaaaaaa24qlnlzexeivdt4fwhonp6b4wigcgt3jgjyahkjzp3p6s6b44qwq"
-          AD="ZZEP:AP-MUMBAI-1-AD-1"
-          SUBNET="ocid1.subnet.oc1.ap-mumbai-1.aaaaaaaagpkv6b72wbxqlbka6o1vswjkox13r5qs7yrqzq4jeq5kf77knbpq"
-          IMG="ocid1.image.oc1.ap-mumbai-1.aaaaaaaa2gm4bht5gaf4ubvmimpprarmnceguytmzrfufmqfmmvpgyul6z5a"
+          C="$OCI_CLI_TENANCY"
+          AD=$(oci iam availability-domain list --query 'data[0].name' --raw-output)
+          SUBNET=$(oci network subnet list -c "$C" --display-name subnet-public-blazor --query 'data[0].id' --raw-output)
+          IMG=$(oci compute image list -c "$C" --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' --shape VM.Standard.A1.Flex --query 'data[0].id' --raw-output)
+          echo "AD=$AD"; echo "SUBNET=$SUBNET"; echo "IMG=$IMG"
           CNT=$(oci compute instance list -c "$C" --display-name blazor-server-mandal --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" --raw-output 2>/dev/null || echo 0)
           if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "Instance already exists (count=$CNT) - nothing to do."; exit 0; fi
           printf '%s\n' "$INSTANCE_SSH_PUBKEY" > /tmp/key.pub
