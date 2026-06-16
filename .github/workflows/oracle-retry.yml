@@ -1,0 +1,48 @@
+name: Oracle A1 capacity retry
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    env:
+      OCI_CLI_USER: ocid1.user.oc1..aaaaaaaa5l47xr6mvisomkhqiucy3yspsed5cc2f7kz567lpklzolk3zhx5a
+      OCI_CLI_TENANCY: ocid1.tenancy.oc1..aaaaaaaa24qlnlzexeivdt4fwhonp6b4wigcgt3jgjyahkjzp3p6s6b44qwq
+      OCI_CLI_FINGERPRINT: "08:0f:2d:4b:66:60:a7:2c:7e:40:d9:b1:eb:e0:03:19"
+      OCI_CLI_REGION: ap-mumbai-1
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+    steps:
+      - name: Install OCI CLI
+        run: |
+          curl -sL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash -s -- --accept-all-defaults
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Launch A1 instance (idempotent)
+        env:
+          INSTANCE_SSH_PUBKEY: ${{ secrets.INSTANCE_SSH_PUBKEY }}
+        run: |
+          set -uo pipefail
+          C="ocid1.tenancy.oc1..aaaaaaaa24qlnlzexeivdt4fwhonp6b4wigcgt3jgjyahkjzp3p6s6b44qwq"
+          AD="ZZEP:AP-MUMBAI-1-AD-1"
+          SUBNET="ocid1.subnet.oc1.ap-mumbai-1.aaaaaaaagpkv6b72wbxqlbka6o1vswjkox13r5qs7yrqzq4jeq5kf77knbpq"
+          IMG="ocid1.image.oc1.ap-mumbai-1.aaaaaaaa2gm4bht5gaf4ubvmimpprarmnceguytmzrfufmqfmmvpgyul6z5a"
+          CNT=$(oci compute instance list -c "$C" --display-name blazor-server-mandal --query "length(data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" --raw-output 2>/dev/null || echo 0)
+          if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "Instance already exists (count=$CNT) - nothing to do."; exit 0; fi
+          printf '%s\n' "$INSTANCE_SSH_PUBKEY" > /tmp/key.pub
+          OUT=$(oci compute instance launch \
+            --availability-domain "$AD" \
+            --compartment-id "$C" \
+            --shape VM.Standard.A1.Flex \
+            --shape-config '{"ocpus":4,"memoryInGBs":24}' \
+            --image-id "$IMG" \
+            --subnet-id "$SUBNET" \
+            --display-name blazor-server-mandal \
+            --assign-public-ip true \
+            --boot-volume-size-in-gbs 200 \
+            --ssh-authorized-keys-file /tmp/key.pub 2>&1) || true
+          echo "$OUT"
+          if echo "$OUT" | grep -q '"id"'; then echo "SUCCESS: instance launched"; exit 0; fi
+          if echo "$OUT" | grep -qi 'capacity'; then echo "Out of capacity - will retry next run"; exit 0; fi
+          echo "Unexpected error - see log above"; exit 1
