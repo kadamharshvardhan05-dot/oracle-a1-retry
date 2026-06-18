@@ -24,7 +24,7 @@ jobs:
         run: |
           curl -sL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash -s -- --accept-all-defaults
           echo "$HOME/bin" >> "$GITHUB_PATH"
-      - name: Hunt for A1 capacity (2 OCPU / 12 GB, loops ~5.5h, retries every 60s)
+      - name: Hunt for A1 capacity (1 OCPU / 6 GB, loops ~5.5h, retries every 60s)
         env:
           INSTANCE_SSH_PUBKEY: ${{ secrets.INSTANCE_SSH_PUBKEY }}
         run: |
@@ -50,7 +50,7 @@ jobs:
             if [ "${CNT:-0}" -gt 0 ] 2>/dev/null; then echo "[$T] Instance already exists (count=$CNT) - done."; exit 0; fi
             OUT=$(oci compute instance launch \
               --availability-domain "$AD" --compartment-id "$C" \
-              --shape VM.Standard.A1.Flex --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+              --shape VM.Standard.A1.Flex --shape-config '{"ocpus":1,"memoryInGBs":6}' \
               --image-id "$IMG" --subnet-id "$SUBNET" \
               --display-name blazor-server-mandal --assign-public-ip true \
               --boot-volume-size-in-gbs 200 --ssh-authorized-keys-file /tmp/key.pub 2>&1) || true
